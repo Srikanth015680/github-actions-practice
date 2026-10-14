@@ -1,0 +1,11 @@
+const express = require("express");
+const cors = require("cors");
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.get("/health", (_req, res) => res.json({ status: "ok", service: "shopflow-api" }));
+app.use("/api/products", require("./routes/product.routes"));
+app.use("/api/cart", require("./routes/cart.routes"));
+app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: "Internal server error" }); });
+module.exports = app;
