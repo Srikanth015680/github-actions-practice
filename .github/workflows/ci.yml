@@ -1,4 +1,3 @@
-
 name: ShopFlow CI
 
 on:
@@ -67,8 +66,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-  docker-build:
-    name: Build Docker images
+  docker-build-and-scan:
+    name: Build Docker images and scan with Trivy
     runs-on: ubuntu-latest
 
     needs:
@@ -84,3 +83,37 @@ jobs:
 
       - name: Build frontend Docker image
         run: docker build -t shopflow-frontend:ci ./frontend
+
+      # Install Trivy
+      - name: Trivy Installation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo apt-key add -
+
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      # Scan backend image
+      - name: Trivy Backend Scan
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            shopflow-backend:ci
+
+      # Scan frontend image
+      - name: Trivy Frontend Scan
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            shopflow-frontend:ci
+
