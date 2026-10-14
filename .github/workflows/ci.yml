@@ -40,7 +40,18 @@ jobs:
       - name: Run backend tests
         run: npm test
 
-  # 2. Frontend tests and build
+      - name: Upload backend test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: |
+            backend/coverage/
+            backend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 2. Frontend tests and production build
   frontend-test-and-build:
     name: Frontend Tests and Build
     runs-on: ubuntu-latest
@@ -69,7 +80,15 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-  # 3. SonarQube source-code analysis
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shopflow-frontend-dist
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # 3. SonarQube code analysis
   sonarqube-analysis:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
@@ -86,26 +105,29 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-  # 4. Build Docker images and scan vulnerabilities
-  docker-build-and-scan:
-    name: Docker Build and Trivy Scan
+  # 4. Build Docker images, scan and push
+  docker-build-scan-push:
+    name: Docker Build, Trivy Scan and Push
     runs-on: ubuntu-latest
 
+    # All these jobs must succeed before Docker images are published.
     needs:
       - backend-test
       - frontend-test-and-build
+      - sonarqube-analysis
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Build local Docker images
       - name: Build backend Docker image
         run: docker build -t shopflow-backend:ci ./backend
 
       - name: Build frontend Docker image
         run: docker build -t shopflow-frontend:ci ./frontend
 
-      # Install Trivy
+      # 5. Install Trivy
       - name: Install Trivy
         run: |
           sudo apt-get update
@@ -120,8 +142,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trivy
 
-      # Scan backend image
+      # 6. Scan backend image and save JSON report
       - name: Scan backend image
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output backend-trivy-report.json \
+            shopflow-backend:ci
+
+      # 7. Scan frontend image and save JSON report
+      - name: Scan frontend image
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output frontend-trivy-report.json \
+            shopflow-frontend:ci
+
+      # 8. Fail the pipeline if HIGH or CRITICAL vulnerabilities exist
+      - name: Enforce vulnerability policy
         run: |
           trivy image \
             --scanners vuln \
@@ -129,11 +171,60 @@ jobs:
             --exit-code 1 \
             shopflow-backend:ci
 
-      # Scan frontend image
-      - name: Scan frontend image
-        run: |
           trivy image \
             --scanners vuln \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             shopflow-frontend:ci
+
+      # 9. Upload Trivy reports, including when a scan fails
+      - name: Upload Trivy security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-security-reports
+          path: |
+            backend-trivy-report.json
+            frontend-trivy-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # 10. Login to Docker Hub on main-branch pushes only
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 11. Tag and push backend image
+      - name: Push backend image to Docker Hub
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker tag shopflow-backend:ci \
+            "$DOCKERHUB_USERNAME/shopflow-backend:$IMAGE_TAG"
+
+          docker tag shopflow-backend:ci \
+            "$DOCKERHUB_USERNAME/shopflow-backend:latest"
+
+          docker push "$DOCKERHUB_USERNAME/shopflow-backend:$IMAGE_TAG"
+          docker push "$DOCKERHUB_USERNAME/shopflow-backend:latest"
+
+      # 12. Tag and push frontend image
+      - name: Push frontend image to Docker Hub
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker tag shopflow-frontend:ci \
+            "$DOCKERHUB_USERNAME/shopflow-frontend:$IMAGE_TAG"
+
+          docker tag shopflow-frontend:ci \
+            "$DOCKERHUB_USERNAME/shopflow-frontend:latest"
+
+          docker push "$DOCKERHUB_USERNAME/shopflow-frontend:$IMAGE_TAG"
+          docker push "$DOCKERHUB_USERNAME/shopflow-frontend:latest"
